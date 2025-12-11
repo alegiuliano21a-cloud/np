@@ -173,16 +173,43 @@ async function extractPdfTextFromReq(req) {
   if (!req.file) throw new Error("PDF mancante (campo 'pdf')");
   const buffer = req.file.buffer;
   const data = await pdfParse(buffer);
-  const txt = (data.text || '').replace(/\s+/g, ' ').trim();
-  if (!txt) throw new Error("Impossibile estrarre testo dal PDF");
-  return txt.slice(0, 50000);
+  const raw = data.text || '';
+  if (!raw) throw new Error("Impossibile estrarre testo dal PDF");
+
+  // Spezza il testo in pagine usando il form-feed '\f' che pdf-parse include
+  // quando possibile. Se non ci sono separatori, fallback a un'unica pagina.
+  const pagesRaw = raw.split(/\f+/).map(p => p.trim()).filter(Boolean);
+
+  // Heuristica: rimuovi pagine che probabilmente sono solo titoli/cover
+  // (molto corte o con pochissime parole). Questo evita di contare
+  // cover/titoli come pagine utili nella logica di paging.
+  function isTitleish(p) {
+    const clean = p.replace(/\s+/g, ' ').trim();
+    if (!clean) return true;
+    const words = clean.split(' ').filter(Boolean);
+    if (words.length < 6) return true; // troppo corta: probabilmente titolo/cover
+    // Se la maggioranza dei caratteri è maiuscola e poche parole, è probabilmente un titolo
+    const letters = clean.replace(/[^A-Za-zÀ-ÿ]/g, '');
+    const uppers = letters.replace(/[^A-ZÀ-Ý]/g, '');
+    if (letters.length > 0 && (uppers.length / letters.length) > 0.6 && words.length < 20) return true;
+    return false;
+  }
+
+  const pages = pagesRaw.length ? pagesRaw.filter(p => !isTitleish(p)) : [raw.replace(/\s+/g, ' ').trim()];
+
+  // Testo aggregato usato per i generatori IA (limitiamo la lunghezza come prima)
+  const txt = pages.join('\n\n').replace(/\s+/g, ' ').trim();
+  return { text: txt.slice(0, 50000), pagesCount: pages.length, rawPages: pagesRaw };
 }
 
 app.post('/api/summary', upload.single('pdf'), async (req,res)=>{
   try{
     const subject = (req.body.subject || 'Generale').trim();
     const length = (req.body.length || 'medio').toLowerCase();
-    const text = await extractPdfTextFromReq(req);
+    const pdf = await extractPdfTextFromReq(req);
+    const text = pdf.text;
+    // Optional: log page count for debugging
+    console.log('[studytool] PDF pages (usable):', pdf.pagesCount);
     const chunks = chunkText(text, 8000);
     let partials = [];
     for (let c of chunks) {
@@ -205,7 +232,9 @@ app.post('/api/flashcards', upload.single('pdf'), async (req,res)=>{
     const subject = (req.body.subject || 'Generale').trim();
     const difficulty = (req.body.difficulty || 'media').toLowerCase();
     const n = Math.max(1, Math.min(parseInt(req.body.num || '12', 10), 60));
-    const text = await extractPdfTextFromReq(req);
+    const pdf = await extractPdfTextFromReq(req);
+    const text = pdf.text;
+    console.log('[studytool] PDF pages (usable):', pdf.pagesCount);
     const out = await buildFlashcards(text, subject, n, difficulty);
     res.json({ ok:true, data: out });
   }catch(e){
@@ -218,7 +247,9 @@ app.post('/api/quiz', upload.single('pdf'), async (req,res)=>{
     const subject = (req.body.subject || 'Generale').trim();
     const difficulty = (req.body.difficulty || 'media').toLowerCase();
     const n = Math.max(1, Math.min(parseInt(req.body.num || '15', 10), 60));
-    const text = await extractPdfTextFromReq(req);
+    const pdf = await extractPdfTextFromReq(req);
+    const text = pdf.text;
+    console.log('[studytool] PDF pages (usable):', pdf.pagesCount);
     const out = await buildQuiz(text, subject, n, difficulty);
     // sanifica e limita a n
     const uniq = [];
