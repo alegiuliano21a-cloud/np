@@ -195,7 +195,22 @@ async function extractPdfTextFromReq(req) {
     return false;
   }
 
-  const pages = pagesRaw.length ? pagesRaw.filter(p => !isTitleish(p)) : [raw.replace(/\s+/g, ' ').trim()];
+  let pages = pagesRaw.length ? pagesRaw.filter(p => !isTitleish(p)) : [raw.replace(/\s+/g, ' ').trim()];
+
+  // NUOVO: Filtra per range di pagine se specificato
+  const pageStart = req.body.pageStart ? Math.max(1, parseInt(req.body.pageStart, 10)) : null;
+  const pageEnd = req.body.pageEnd ? Math.max(1, parseInt(req.body.pageEnd, 10)) : null;
+  
+  if (pageStart || pageEnd) {
+    const start = pageStart ? pageStart - 1 : 0; // indice 0-based
+    const end = pageEnd ? Math.min(pageEnd, pages.length) : pages.length;
+    if (start < pages.length && start < end) {
+      pages = pages.slice(start, end);
+      console.log(`[studytool] Pagine filtrate: ${start+1}-${end} (su ${pages.length+start})`);
+    } else {
+      console.log(`[studytool] Range pagine non valido: ${start+1}-${end}`);
+    }
+  }
 
   // Testo aggregato usato per i generatori IA (limitiamo la lunghezza come prima)
   const txt = pages.join('\n\n').replace(/\s+/g, ' ').trim();
